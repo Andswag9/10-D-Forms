@@ -33,7 +33,6 @@ import sys
 import re
 import shutil
 import glob
-import json
 import traceback
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
@@ -78,24 +77,6 @@ def add_file_row(deal, det_date, servicer, file_type, status, path, note=""):
         "file_type": file_type, "status": status, "path": path, "note": note,
     })
 
-def _agent_debug_log(run_id, hypothesis_id, location, message, data):
-    """
-    Debug-mode NDJSON logger for runtime evidence.
-    """
-    payload = {
-        "sessionId": "6d4434",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(datetime.now().timestamp() * 1000),
-    }
-    try:
-        with open("debug-6d4434.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
 
@@ -201,6 +182,38 @@ def read_irp(irp_path):
     wb.close()
     log(f"  IRP: {len(data)-1} data rows, {len(data[0])-1} columns")
     return data
+
+# Expected header fragments at key IRP column positions (case-insensitive substring match)
+_IRP_HEADER_CHECKS = {
+    cfg.IRP_COL_TRANS_ID:   "Transaction ID",
+    cfg.IRP_COL_LOAN_ID:    "Loan ID",
+    cfg.IRP_COL_END_BAL:    "Ending Scheduled",
+    cfg.IRP_COL_DIST_DATE:  "Distribution Date",
+    cfg.IRP_COL_BEG_BAL:    "Beginning Scheduled",
+    cfg.IRP_COL_PAID_THRU:  "Paid Through",
+    cfg.IRP_COL_SERVICER:   "Servicer",
+}
+
+def validate_irp_columns(irp_data):
+    """Warn if IRP header labels don't match expected column positions."""
+    if not irp_data:
+        return
+    header = irp_data[0]
+    warnings = []
+    for col_idx, expected_fragment in _IRP_HEADER_CHECKS.items():
+        if col_idx >= len(header):
+            warnings.append(f"    Col {col_idx}: MISSING (header has only {len(header)-1} columns)")
+            continue
+        actual = str(header[col_idx] or "").strip()
+        if expected_fragment.lower() not in actual.lower():
+            warnings.append(f"    Col {col_idx}: expected '{expected_fragment}' but found '{actual}'")
+    if warnings:
+        log("  WARNING: IRP column layout may have changed:", "WARN")
+        for w in warnings:
+            log(w, "WARN")
+        log("  Review IRP_COL_* values in cmbs_config.py if data looks wrong.", "WARN")
+    else:
+        log("  IRP column validation passed.")
 
 def read_pirpxllr(pirp_path):
     """
@@ -799,8 +812,6 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
         ws = wb.active
         last_row = ws.max_row
         matched = unmatched = unmatched_logged = 0
-        periodic_probe_logged = False
-        ee_fix_probe_logged = False
         for row_1 in range(cfg.PERIODIC_FIRST_DATA, last_row + 1):
             raw_loan_id = ws.cell(row_1, cfg.PERIODIC_LOAN_COL).value
             irp_row = None
@@ -835,26 +846,8 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
                                     cell.value = float(adjusted.strftime("%Y%m%d"))
                                 else:
                                     cell.value = adjusted.strftime("%Y%m%d")
-                        except Exception:
-                            pass
-                        if not ee_fix_probe_logged:
-                            ee_fix_probe_logged = True
-                            # #region agent log
-                            _agent_debug_log(
-                                run_id="post_fix_ee_minus_1",
-                                hypothesis_id="H_EE_1",
-                                location="create_periodic",
-                                message="Periodic EE adjusted by -1 day",
-                                data={
-                                    "transId": trans_id,
-                                    "row": row_1,
-                                    "eeBefore": ee_before,
-                                    "eeBeforeType": type(ee_before).__name__ if ee_before is not None else "NoneType",
-                                    "eeAfter": cell.value,
-                                    "eeAfterType": type(cell.value).__name__ if cell.value is not None else "NoneType",
-                                },
-                            )
-                            # #endregion
+                        except Exception as e:
+                            log(f"     Periodic EE date adjust failed row {row_1}: {e}", "WARN")
                     _highlight_cell(cell)
 
                 # Prospectus Loan ID from PIRPXLLR (if available)
@@ -864,8 +857,8 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
                         cell_prosp = ws.cell(row_1, PROSP_COL_1)
                         cell_prosp.value = prosp_loan_id
                         _highlight_cell(cell_prosp)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log(f"     Prospectus ID write failed row {row_1}: {e}", "WARN")
 
                 # After IRP updates, ensure key Periodic formula columns
                 # are present when cells are plain values:
@@ -888,27 +881,6 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
                         continue
                     cell.value = formula
                     _highlight_cell(cell)
-
-                if not periodic_probe_logged:
-                    periodic_probe_logged = True
-                    # #region agent log
-                    _agent_debug_log(
-                        run_id="probe_fixes1_5",
-                        hypothesis_id="H1",
-                        location="create_periodic",
-                        message="Periodic key columns after update",
-                        data={
-                            "transId": trans_id,
-                            "row": row_1,
-                            "col7": ws.cell(row_1, 7).value,
-                            "col25": ws.cell(row_1, 25).value,
-                            "col36": ws.cell(row_1, 36).value,
-                            "col7IsFormula": isinstance(ws.cell(row_1, 7).value, str) and str(ws.cell(row_1, 7).value).startswith("="),
-                            "col25IsFormula": isinstance(ws.cell(row_1, 25).value, str) and str(ws.cell(row_1, 25).value).startswith("="),
-                            "col36IsFormula": isinstance(ws.cell(row_1, 36).value, str) and str(ws.cell(row_1, 36).value).startswith("="),
-                        },
-                    )
-                    # #endregion
 
                 matched += 1
             else:
@@ -1036,13 +1008,13 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
                         alloc_pct = 0.0
                         try:
                             alloc_pct = float(xls_cell(ws_r, row_0, ALLOC_PCT_0) or 0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log(f"     Property (xls): alloc_pct parse failed row {row_0+1}: {e}", "WARN")
                         end_bal = 0.0
                         try:
                             end_bal = float(irp_data[irp_row][GANA_END_COL] or 0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log(f"     Property (xls): end_bal parse failed row {row_0+1}: {e}", "WARN")
                         alloc_bal = end_bal * (alloc_pct / 100) if alloc_pct else end_bal
                         ws_w.write(row_0, ALLOC_BAL_0, alloc_bal)
                         alloc_written += 1
@@ -1059,20 +1031,6 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
                             "WARN",
                         )
 
-            # #region agent log
-            _agent_debug_log(
-                run_id="post_fix_multirow",
-                hypothesis_id="H1",
-                location="create_property.xls",
-                message="Property first-row-only alloc balance",
-                data={
-                    "transId": trans_id,
-                    "matchedRows": matched,
-                    "allocWrittenRows": alloc_written,
-                    "uniqueLoansSeen": len(seen_loan_ids),
-                },
-            )
-            # #endregion
             wb_w.save(dest)
 
         else:  # .xlsx
@@ -1128,13 +1086,13 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
                         alloc_pct = 0.0
                         try:
                             alloc_pct = float(ws.cell(row_1, cfg.PROP_ALLOC_PCT_COL).value or 0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log(f"     Property (xlsx): alloc_pct parse failed row {row_1}: {e}", "WARN")
                         end_bal = 0.0
                         try:
                             end_bal = float(irp_data[irp_row][GANA_END_COL] or 0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log(f"     Property (xlsx): end_bal parse failed row {row_1}: {e}", "WARN")
                         cell_bal = ws.cell(row_1, cfg.PROP_ALLOC_BAL_COL)
                         cell_bal.value = end_bal * (alloc_pct / 100) if alloc_pct else end_bal
                         _highlight_cell(cell_bal)
@@ -1151,20 +1109,6 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
                             f"variants={variants}",
                             "WARN",
                         )
-            # #region agent log
-            _agent_debug_log(
-                run_id="post_fix_multirow",
-                hypothesis_id="H1",
-                location="create_property.xlsx",
-                message="Property first-row-only alloc balance",
-                data={
-                    "transId": trans_id,
-                    "matchedRows": matched,
-                    "allocWrittenRows": alloc_written,
-                    "uniqueLoansSeen": len(seen_loan_ids),
-                },
-            )
-            # #endregion
             wb.save(dest)
 
         log(f"     Property: {matched} rows updated, {unmatched} unmatched (of {matched+unmatched} rows)")
@@ -1442,8 +1386,8 @@ def _process_total_loan_xls(ws_r, ws_w, loan_map, irp_data, trans_id, book_r):
             _write(10, f"SUM(K{first_data_row_1}:K{excel_total_row-1})", style_K)  # K
             _write(11, f"SUM(L{first_data_row_1}:L{excel_total_row-1})", style_L)  # L
             _write(12, f"SUM(M{first_data_row_1}:M{excel_total_row-1})", style_M)  # M
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"     Total Loan (xls): TOTAL row formula write failed: {e}", "WARN")
 
 def _process_total_loan_xlsx(ws, loan_map, irp_data):
     """
@@ -1523,23 +1467,8 @@ def _process_total_loan_xlsx(ws, loan_map, irp_data):
                 _cell = ws.cell(total_row_1, _tc)
                 _cell.value = _tf
                 _highlight_cell(_cell)
-        except Exception:
-            pass
-    # #region agent log
-    _agent_debug_log(
-        run_id="probe_fixes1_5",
-        hypothesis_id="H3",
-        location="_process_total_loan_xlsx",
-        message="Total Loan TOTAL row snapshot",
-        data={
-            "totalRow": total_row_1,
-            "colL": ws.cell(total_row_1, 12).value if total_row_1 >= 0 else None,
-            "colM": ws.cell(total_row_1, 13).value if total_row_1 >= 0 else None,
-            "colLIsFormula": isinstance(ws.cell(total_row_1, 12).value, str) and str(ws.cell(total_row_1, 12).value).startswith("=") if total_row_1 >= 0 else False,
-            "colMIsFormula": isinstance(ws.cell(total_row_1, 13).value, str) and str(ws.cell(total_row_1, 13).value).startswith("=") if total_row_1 >= 0 else False,
-        },
-    )
-    # #endregion
+        except Exception as e:
+            log(f"     Total Loan (xlsx): TOTAL row formula write failed: {e}", "WARN")
 
 def _process_comp_finan_xls(ws_r, ws_w, loan_map, irp_data):
     """
@@ -1634,20 +1563,6 @@ def _process_comp_finan_xls(ws_r, ws_w, loan_map, irp_data):
                     ws_w.write(total_row_0, col_idx, xlwt.Formula(formula))
         except Exception:
             pass
-    # #region agent log
-    _agent_debug_log(
-        run_id="post_fix_multirow",
-        hypothesis_id="H2",
-        location="_process_comp_finan_xls",
-        message="Comp Finan first-row-only I/J + dynamic totals",
-        data={
-            "matchedRows": matched,
-            "ijWrittenRows": ij_written,
-            "uniqueLoansSeen": len(seen_loan_ids),
-            "totalRow0": total_row_0,
-        },
-    )
-    # #endregion
 
 def _process_comp_finan_xlsx(ws, loan_map, irp_data):
     """FIX GAP 3 (.xlsx path): Key col = B (col 2 in 1-based openpyxl)."""
@@ -1728,22 +1643,6 @@ def _process_comp_finan_xlsx(ws, loan_map, irp_data):
                 _highlight_cell(_cell)
         except Exception:
             pass
-    # #region agent log
-    _agent_debug_log(
-        run_id="probe_fixes1_5",
-        hypothesis_id="H2",
-        location="_process_comp_finan_xlsx",
-        message="Comp Finan TOTAL row snapshot",
-        data={
-            "totalRow": total_row_1,
-            "colI": ws.cell(total_row_1, 9).value if total_row_1 >= 0 else None,
-            "colIIsFormula": isinstance(ws.cell(total_row_1, 9).value, str) and str(ws.cell(total_row_1, 9).value).startswith("=") if total_row_1 >= 0 else False,
-            "matchedRows": matched,
-            "ijWrittenRows": ij_written,
-            "uniqueLoansSeen": len(seen_loan_ids),
-        },
-    )
-    # #endregion
 
 def _collect_res_loc_rows(pirp_data, trans_id):
     """
@@ -1868,20 +1767,6 @@ def _process_res_loc_xls(ws_r, ws_w, pirp_data, trans_id):
                     ws_w.write(r_0, 12, xlwt.Formula(f"J{r_1}+K{r_1}-L{r_1}"))
         except Exception:
             pass
-    # #region agent log
-    _agent_debug_log(
-        run_id="post_fix_multirow",
-        hypothesis_id="H4",
-        location="_process_res_loc_xls",
-        message="Res LOC dynamic totals row",
-        data={
-            "totalsRow0": total_row_0,
-            "lastWritten0": last_written_0,
-            "clearedRows": cleared,
-            "matchingCount": len(matching),
-        },
-    )
-    # #endregion
 
 def _process_res_loc_xlsx(ws, pirp_data, trans_id):
     """FIX GAP 4 (.xlsx path)."""
@@ -1893,7 +1778,6 @@ def _process_res_loc_xlsx(ws, pirp_data, trans_id):
         log(f"       Res LOC: No matching data in PIRPXLLR for {trans_id}")
         return
 
-    resloc_probe_logged = False
     for i, pirp_row_idx in enumerate(matching):
         write_1 = WRITE_START_1 + i
         for c in range(1, LAST_COL + 1):
@@ -1906,23 +1790,6 @@ def _process_res_loc_xlsx(ws, pirp_data, trans_id):
             cell_tid = ws.cell(write_1, 1)
             cell_tid.value = trans_id
             _highlight_cell(cell_tid)
-        if not resloc_probe_logged:
-            resloc_probe_logged = True
-            # #region agent log
-            _agent_debug_log(
-                run_id="probe_fixes1_5",
-                hypothesis_id="H4",
-                location="_process_res_loc_xlsx",
-                message="Res LOC first written row snapshot",
-                data={
-                    "writeRow": write_1,
-                    "rawColC": pirp_data[pirp_row_idx][3] if 3 < len(pirp_data[pirp_row_idx]) else None,
-                    "rawColD": pirp_data[pirp_row_idx][4] if 4 < len(pirp_data[pirp_row_idx]) else None,
-                    "writtenColC": ws.cell(write_1, 3).value,
-                    "writtenColD": ws.cell(write_1, 4).value,
-                },
-            )
-            # #endregion
 
     log(f"       Res LOC: {len(matching)} rows written from PIRPXLLR")
 
@@ -1967,28 +1834,6 @@ def _process_res_loc_xlsx(ws, pirp_data, trans_id):
                 _highlight_cell(_cell_m)
         except Exception:
             pass
-    # #region agent log
-    _agent_debug_log(
-        run_id="probe_fixes1_5",
-        hypothesis_id="H5",
-        location="_process_res_loc_xlsx",
-        message="Res LOC totals row snapshot",
-        data={
-            "totalsRow": total_row_1,
-            "labelColA": ws.cell(total_row_1, 1).value if total_row_1 >= 1 else None,
-            "colJ": ws.cell(total_row_1, 10).value if total_row_1 >= 1 else None,
-            "colK": ws.cell(total_row_1, 11).value if total_row_1 >= 1 else None,
-            "colL": ws.cell(total_row_1, 12).value if total_row_1 >= 1 else None,
-            "colM": ws.cell(total_row_1, 13).value if total_row_1 >= 1 else None,
-            "colJIsFormula": isinstance(ws.cell(total_row_1, 10).value, str) and str(ws.cell(total_row_1, 10).value).startswith("=") if total_row_1 >= 1 else False,
-            "colKIsFormula": isinstance(ws.cell(total_row_1, 11).value, str) and str(ws.cell(total_row_1, 11).value).startswith("=") if total_row_1 >= 1 else False,
-            "colLIsFormula": isinstance(ws.cell(total_row_1, 12).value, str) and str(ws.cell(total_row_1, 12).value).startswith("=") if total_row_1 >= 1 else False,
-            "colMIsFormula": isinstance(ws.cell(total_row_1, 13).value, str) and str(ws.cell(total_row_1, 13).value).startswith("=") if total_row_1 >= 1 else False,
-            "lastWrittenRow": last_written_row,
-            "clearedRows": cleared,
-        },
-    )
-    # #endregion
 
 def create_supplemental(trans_id, det_date, irp_data, pirp_data, prev_folder, out_folder, excel_app=None):
     """
@@ -2393,6 +2238,7 @@ def run():
         log("  No PIRPXLLR file found - Res LOC will carry forward")
 
     irp_data  = read_irp(irp_path)
+    validate_irp_columns(irp_data)
     pirp_data = read_pirpxllr(pirp_path) if pirp_path else []
 
     # Start a shared Excel COM instance for .xls -> .xlsx conversion, when available.

@@ -1,0 +1,23 @@
+{
+    "_comment": "Deal-specific overrides for the CMBS Reporting Tool. Edit this file (not cmbs_config.py) to add or change deal mappings.",
+
+    "folder_overrides": {
+        "_comment": "Key = Transaction ID (exactly as in IRP, case-sensitive). Value = full path to the DEAL folder on production (not the CREFC subfolder). The tool still scans inside for CREFC/CREFCs/etc.",
+
+        "BANK5 20255YR15":  "S:\\Lenders\\Trimont\\Reporting\\2025-5YR15 BANK5 (Del Prado)",
+        "BANK5 20255YR18":  "S:\\Lenders\\Trimont\\Reporting\\2025-5YR18 BANK5 (Naugatuck)",
+
+        "MSC 2021-L5":      "S:\\Lenders\\KeyBank\\Reporting\\1--ACTIVE POOLS\\5 -- MSC 2021-L5 (K2H Airpark and Little Boston)",
+        "BBCMS 2021-C12":   "S:\\Lenders\\KeyBank\\Reporting\\1--ACTIVE POOLS\\6 -- BBCMS 2021-C12 (MCP Ind)",
+        "BMO 2023-5C2":     "S:\\Lenders\\KeyBank\\Reporting\\1--ACTIVE POOLS\\7 -- BMO 2023-5C2 (Hawaii St. Office)",
+
+        "BBCMS 2025-C32":   "S:\\Lenders\\Midland\\Reporting\\2025-C32 BBCMS"
+    },
+
+    "filename_overrides": {
+        "_comment": "Key = Transaction ID (as in IRP). Value = string used in CREFC filenames on disk when it differs from the IRP Transaction ID.",
+
+        "BANK5 20255YR15": "BANK5 2025-5YR15",
+        "BANK5 20255YR18": "BANK5 2025-5YR18"
+    }
+}

@@ -74,7 +74,7 @@ PROP_FIRST_DATA   = 7
 
 # Supplemental tabs that get only an A1 date update
 SUPP_DATE_ONLY_TABS = ["Watchlist", "Delq Loan Status", "REO Status",
-                        "Hist Mod & Corr", "Hist Mod & Corr"]
+                        "Hist Mod & Corr"]
 
 # Supplemental Total Loan tab
 SUPP_TOTAL_LOAN_TAB  = "Total Loan"
@@ -104,38 +104,23 @@ DT_DESC_COL        = 4     # D
 DT_FIRST_DATA_ROW  = 5
 
 # =============================================================================
-# DEAL FOLDER OVERRIDES
+# DEAL FOLDER & FILENAME OVERRIDES
 # =============================================================================
-# Use this table for any deal where the automatic S: drive scan fails.
-# Common reasons: non-standard folder naming, nested subfolders, typos
-# in the CREFC subfolder name, or series IDs that don't match the regex.
+# Loaded from deal_overrides.json in the same directory as this file.
+# Edit that JSON file (not this .py) to add or change deal mappings.
 #
-# Key   = Transaction ID exactly as it appears in the IRP (case-sensitive)
-# Value = Full path to the DEAL folder on production (NOT the CREFC subfolder).
-#         The tool will still scan inside for CREFC/CREFCs/etc. subfolders.
-#         Do NOT include a trailing backslash.
-#
-# To add a new deal: copy one of the lines below and fill in the details.
+# folder_overrides:   Transaction ID -> full deal folder path (not CREFC subfolder)
+# filename_overrides: Transaction ID -> string used in CREFC filenames on disk
 # =============================================================================
-DEAL_FOLDER_OVERRIDES = {
-    # BANK5: series "20255YR15" / "20255YR18" have 5 leading digits so regex misses them
-    "BANK5 20255YR15":  r"S:\Lenders\Trimont\Reporting\2025-5YR15 BANK5 (Del Prado)",
-    "BANK5 20255YR18":  r"S:\Lenders\Trimont\Reporting\2025-5YR18 BANK5 (Naugatuck)",
+import json as _json
+import os as _os
 
-    # KeyBank deals nested inside 1--ACTIVE POOLS subfolder
-    "MSC 2021-L5":      r"S:\Lenders\KeyBank\Reporting\1--ACTIVE POOLS\5 -- MSC 2021-L5 (K2H Airpark and Little Boston)",
-    "BBCMS 2021-C12":   r"S:\Lenders\KeyBank\Reporting\1--ACTIVE POOLS\6 -- BBCMS 2021-C12 (MCP Ind)",
-    "BMO 2023-5C2":     r"S:\Lenders\KeyBank\Reporting\1--ACTIVE POOLS\7 -- BMO 2023-5C2 (Hawaii St. Office)",
+_OVERRIDES_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "deal_overrides.json")
+try:
+    with open(_OVERRIDES_PATH, "r", encoding="utf-8") as _f:
+        _overrides = _json.load(_f)
+except (FileNotFoundError, _json.JSONDecodeError):
+    _overrides = {}
 
-    # BBCMS 2025-C32: CREFC subfolder has a typo ("CFEFC" not "CREFC")
-    # Override points to the deal folder; "CFEFC" added to CREFC_FOLDER_VARIANTS below
-    "BBCMS 2025-C32":   r"S:\Lenders\Midland\Reporting\2025-C32 BBCMS",
-}
-
-# Filename lookup override when IRP Transaction ID doesn't match filenames on disk.
-# Key = Transaction ID (as in IRP), Value = string used in CREFC filenames.
-# Example: IRP has "BANK5 20255YR15" but files are named "BANK5 2025-5YR15".
-DEAL_FILENAME_OVERRIDES = {
-    "BANK5 20255YR15": "BANK5 2025-5YR15",
-    "BANK5 20255YR18": "BANK5 2025-5YR18",
-}
+DEAL_FOLDER_OVERRIDES = {k: v for k, v in _overrides.get("folder_overrides", {}).items() if k != "_comment"}
+DEAL_FILENAME_OVERRIDES = {k: v for k, v in _overrides.get("filename_overrides", {}).items() if k != "_comment"}
