@@ -1,0 +1,162 @@
+1. Replace your normalize_loan_id() with this
+import re
+from decimal import Decimal, InvalidOperation
+
+def normalize_loan_id(value):
+    """
+    Canonical loan-id normalizer for IRP + CREFC matching.
+
+    Handles:
+    - Excel numeric reads: 304810038.0 -> 304810038
+    - whitespace / NBSP / quotes
+    - commas in numeric strings
+    - scientific notation
+    - punctuation cleanup for mixed IDs
+
+    Preserves leading zeros for true digit strings like '030000001'.
+    """
+
+    if value is None:
+        return ""
+
+    s = str(value)
+
+    # normalize whitespace
+    s = s.replace("\u00A0", " ")
+    s = s.strip().strip("'").strip('"')
+
+    if not s:
+        return ""
+
+    s = re.sub(r"\s+", "", s)
+
+    # remove commas
+    s_no_commas = s.replace(",", "")
+
+    # preserve leading zero digit strings
+    if re.fullmatch(r"\d+", s_no_commas):
+        return s_no_commas
+
+    # collapse integer-like decimals safely
+    try:
+        d = Decimal(s_no_commas)
+        if d == d.to_integral_value():
+            return str(d.quantize(Decimal("1")))
+    except (InvalidOperation, ValueError):
+        pass
+
+    # fallback for alphanumeric IDs
+    alnum = re.sub(r"[^A-Za-z0-9]", "", s).upper()
+
+    if alnum:
+        return alnum
+
+    return s.upper()
+2. Add this helper below it
+def loan_id_variants(value):
+    """
+    Generate multiple matching keys for a loan ID.
+    This helps when files use slightly different formats.
+    """
+
+    base = normalize_loan_id(value)
+
+    if not base:
+        return []
+
+    variants = {base}
+
+    # numeric variants
+    if base.isdigit():
+
+        variants.add(base.lstrip("0") or "0")
+
+        try:
+            variants.add(str(int(base)))
+        except Exception:
+            pass
+
+    # raw alphanumeric cleanup
+    raw = str(value).strip()
+    raw_alnum = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+
+    if raw_alnum:
+        variants.add(raw_alnum)
+
+    return [v for v in variants if v]
+3. Replace your get_loan_ids() function
+def get_loan_ids(irp_data, trans_id):
+
+    result = {}
+
+    for i, row in enumerate(irp_data[1:], start=1):
+
+        if str(row[cfg.IRP_COL_TRANS_ID] or "").strip() != trans_id:
+            continue
+
+        for col in (cfg.IRP_COL_LOAN_ID, cfg.IRP_COL_LOAN_NUM):
+
+            raw = row[col]
+
+            for lid in loan_id_variants(raw):
+
+                result.setdefault(lid, i)
+
+    return result
+4. Replace the loan matching logic in Periodic / Property sections
+
+Find where you currently do something like:
+
+loan_id = normalize_loan_id(xls_cell(ws_r, row_0, LOAN_COL))
+irp_row = loan_map.get(loan_id)
+
+Replace with:
+
+raw_loan_id = xls_cell(ws_r, row_0, LOAN_COL)
+
+irp_row = None
+
+for key in loan_id_variants(raw_loan_id):
+
+    irp_row = loan_map.get(key)
+
+    if irp_row:
+        break
+5. Add debug logging for unmatched rows
+
+Inside your unmatched branch:
+
+else:
+
+    unmatched += 1
+
+    if unmatched <= 5:
+
+        raw_file_id = xls_cell(ws_r, row_0, LOAN_COL)
+
+        log(
+            f"     Unmatched loan row {row_0+1}: "
+            f"raw='{raw_file_id}' "
+            f"normalized='{normalize_loan_id(raw_file_id)}' "
+            f"sample_irp_keys={list(loan_map.keys())[:5]}",
+            "WARN"
+        )
+
+This is extremely useful for diagnosing Midland formatting issues.
+
+What this fix solves
+
+Your run log showed .xls deals with:
+
+0 loans matched
+Check Loan ID format
+
+These improvements fix the most common causes:
+
+Issue	Fix
+304810038.0 vs 304810038	Decimal normalization
+hidden Excel spaces	whitespace cleanup
+commas in numbers	comma removal
+leading zero mismatch	variant matching
+punctuation differences	alphanumeric normalization
+Loan ID vs Loan Number differences	multi-key mapping
