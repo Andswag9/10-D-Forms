@@ -33,6 +33,7 @@ import sys
 import re
 import shutil
 import glob
+import argparse
 import traceback
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
@@ -71,11 +72,26 @@ def _highlight_cell(cell):
     if cfg.VALIDATION_MODE:
         cell.fill = YELLOW_FILL
 
-def add_file_row(deal, det_date, servicer, file_type, status, path, note=""):
+def add_file_row(deal, det_date, servicer, file_type, status, path, note="",
+                  matched=0, unmatched=0, total_rows=0):
     file_rows.append({
         "deal": deal, "det_date": det_date, "servicer": servicer,
         "file_type": file_type, "status": status, "path": path, "note": note,
+        "matched": matched, "unmatched": unmatched, "total_rows": total_rows,
     })
+
+def validate_output_file(dest, file_type):
+    """Basic post-write validation. Returns list of warning strings."""
+    warnings = []
+    if not os.path.isfile(dest):
+        warnings.append(f"{file_type}: Output file does not exist after save")
+        return warnings
+    size = os.path.getsize(dest)
+    if size == 0:
+        warnings.append(f"{file_type}: Output file is 0 bytes")
+    elif size < 1024:
+        warnings.append(f"{file_type}: Output file suspiciously small ({size} bytes)")
+    return warnings
 
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
@@ -93,8 +109,13 @@ def test_path(p):
     return p
 
 def servicer_to_folder(code):
-    """K -> KeyBank, M -> Midland, TM/WF -> Trimont, else pass-through."""
-    return cfg.SERVICER_FOLDER_MAP.get(code.upper(), code)
+    """K -> KeyBank, M -> Midland, TM/WF -> Trimont, else warn and pass-through."""
+    result = cfg.SERVICER_FOLDER_MAP.get(code.upper(), None)
+    if result is None:
+        log(f"  WARNING: Unknown servicer code '{code}' — not in SERVICER_FOLDER_MAP. "
+            f"Add to cmbs_config.py or use DEAL_FOLDER_OVERRIDES in deal_overrides.json.", "WARN")
+        return code
+    return result
 
 def clean_filename(trans_id):
     """Remove characters illegal in Windows filenames."""
@@ -214,6 +235,18 @@ def validate_irp_columns(irp_data):
         log("  Review IRP_COL_* values in cmbs_config.py if data looks wrong.", "WARN")
     else:
         log("  IRP column validation passed.")
+
+def validate_overrides():
+    """Check that deal_overrides.json folder paths exist on disk."""
+    overrides = getattr(cfg, "DEAL_FOLDER_OVERRIDES", {})
+    if not overrides:
+        return
+    log("  Validating deal override paths...")
+    for tid, path in overrides.items():
+        if not os.path.isdir(path):
+            log(f"    WARNING: Override path does not exist: {tid} -> {path}", "WARN")
+        else:
+            log(f"    OK: {tid}")
 
 def read_pirpxllr(pirp_path):
     """
@@ -782,7 +815,7 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
 
     if not src:
         log(f"     Periodic: SKIP — no source file found in {prev_folder}")
-        return "", "No previous Periodic file found"
+        return "", "No previous Periodic file found", {}
 
     src_ext = os.path.splitext(src)[1].lower()
     dt      = parse_det_date(det_date)
@@ -896,11 +929,14 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
                     )
         wb.save(dest)
 
-        log(f"     Periodic: {matched} loans updated, {unmatched} unmatched (of {matched+unmatched} rows)")
+        metrics = {"matched": matched, "unmatched": unmatched, "total_rows": matched + unmatched}
+        log(f"     Periodic: {matched} loans updated, {unmatched} unmatched (of {metrics['total_rows']} rows)")
         log(f"     Periodic: SAVED -> {dest}")
-        return dest, ""
+        for w in validate_output_file(dest, "Periodic"):
+            log(f"     {w}", "WARN")
+        return dest, "", metrics
     except Exception as e:
-        return "", str(e)
+        return "", str(e), {}
     finally:
         if converted_tmp:
             try:
@@ -929,7 +965,7 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
 
     if not src:
         log(f"     Property: SKIP — no source file found in {prev_folder}")
-        return "", "No previous Property file found"
+        return "", "No previous Property file found", {}
 
     src_ext  = os.path.splitext(src)[1].lower()
     dt2      = parse_det_date(det_date)
@@ -969,7 +1005,7 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
 
             if last_row_0 < FIRST_DATA_0:
                 log("     Property: No data rows in previous file - skipping")
-                return "", "No data rows in previous Property file"
+                return "", "No data rows in previous Property file", {}
 
             log(f"     Property: Last data row: {last_row_0 + 1}")
 
@@ -1046,7 +1082,7 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
             if last_row_1 < cfg.PROP_FIRST_DATA:
                 log("     Property: No data rows in previous file - skipping")
                 wb.close()
-                return "", "No data rows in previous Property file"
+                return "", "No data rows in previous Property file", {}
 
             # FIX GAP 1: Block detection
             last_dist = ws.cell(last_row_1, cfg.PROP_DIST_DATE_COL).value
@@ -1111,11 +1147,14 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
                         )
             wb.save(dest)
 
-        log(f"     Property: {matched} rows updated, {unmatched} unmatched (of {matched+unmatched} rows)")
+        metrics = {"matched": matched, "unmatched": unmatched, "total_rows": matched + unmatched}
+        log(f"     Property: {matched} rows updated, {unmatched} unmatched (of {metrics['total_rows']} rows)")
         log(f"     Property: SAVED -> {dest}")
-        return dest, ""
+        for w in validate_output_file(dest, "Property"):
+            log(f"     {w}", "WARN")
+        return dest, "", metrics
     except Exception as e:
-        return "", str(e)
+        return "", str(e), {}
 
 # ── Supplemental file ─────────────────────────────────────────────────────────
 
@@ -1854,7 +1893,7 @@ def create_supplemental(trans_id, det_date, irp_data, pirp_data, prev_folder, ou
 
     if not src:
         log(f"     Supplemental: SKIP — no source file found in {prev_folder}")
-        return "", "No previous Supplemental file found"
+        return "", "No previous Supplemental file found", {}
 
     src_ext  = os.path.splitext(src)[1].lower()
     dt3      = parse_det_date(det_date)
@@ -1942,9 +1981,11 @@ def create_supplemental(trans_id, det_date, irp_data, pirp_data, prev_folder, ou
             wb.save(dest)
 
         log(f"     Supplemental: SAVED -> {dest}")
-        return dest, ""
+        for w in validate_output_file(dest, "Supplemental"):
+            log(f"     {w}", "WARN")
+        return dest, "", {}
     except Exception as e:
-        return "", str(e)
+        return "", str(e), {}
 
 # ── Financial file ────────────────────────────────────────────────────────────
 
@@ -1966,7 +2007,7 @@ def create_financial(trans_id, det_date, prev_folder, out_folder, excel_app=None
 
     if not src:
         log(f"     Financial: SKIP — no Financial file found in {prev_folder}")
-        return "", "No Financial file found"
+        return "", "No Financial file found", {}
 
     clean = clean_filename(trans_id)
     dt    = parse_det_date(det_date)
@@ -2038,9 +2079,11 @@ def create_financial(trans_id, det_date, prev_folder, out_folder, excel_app=None
             wb.save(dest)
 
         log(f"     Financial: SAVED -> {dest}")
-        return dest, ""
+        for w in validate_output_file(dest, "Financial"):
+            log(f"     {w}", "WARN")
+        return dest, "", {}
     except Exception as e:
-        return "", str(e)
+        return "", str(e), {}
 
 # ── Excel run log writer ──────────────────────────────────────────────────────
 
@@ -2051,23 +2094,27 @@ STATUS_COLORS = {
     "ERROR":   "FF0000",   # red
 }
 
-def write_excel_log(log_path, deal_summary, elapsed_sec):
-    """Write 3-tab Excel log: Deal Summary, File Detail, Run Log."""
+def write_excel_log(log_path, deal_summary, elapsed_sec, filtered_deals=None):
+    """Write 4-tab Excel log: Deal Summary, File Detail, Filtered Deals, Run Log."""
+    if filtered_deals is None:
+        filtered_deals = []
     wb = openpyxl.Workbook()
 
     hdr_font = Font(bold=True, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="1F4E79")
     thin     = Side(style="thin")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
+    red_fill = PatternFill("solid", fgColor="FFCCCC")
 
     # ── Tab 1: Deal Summary ──────────────────────────────────────────────────
     ws1 = wb.active
     ws1.title = "Deal Summary"
 
     cols1   = ["Deal", "Det Date", "Servicer", "Status", "Files Created",
+               "Periodic Matched", "Periodic Unmatched", "Property Matched", "Property Unmatched",
                "Periodic Path", "Property Path", "Supplemental Path", "Financial Path",
                "Notes / Error"]
-    widths1 = [22, 12, 10, 10, 14, 60, 60, 60, 60, 50]
+    widths1 = [22, 12, 10, 10, 14, 16, 18, 16, 18, 60, 60, 60, 60, 50]
 
     for c, h in enumerate(cols1, 1):
         cell = ws1.cell(2, c, h)
@@ -2077,9 +2124,13 @@ def write_excel_log(log_path, deal_summary, elapsed_sec):
         ws1.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
 
     for i, deal in enumerate(deal_summary, 3):
+        p_metrics = deal.get("periodic_metrics", {})
+        pr_metrics = deal.get("property_metrics", {})
         row_data = [
             deal["trans_id"], deal["det_date"], deal["servicer"], deal["status"],
             deal["files_count"],
+            p_metrics.get("matched", ""), p_metrics.get("unmatched", ""),
+            pr_metrics.get("matched", ""), pr_metrics.get("unmatched", ""),
             deal.get("periodic_path", ""), deal.get("property_path", ""),
             deal.get("supplemental_path", ""), deal.get("financial_path", ""),
             deal.get("note", ""),
@@ -2091,7 +2142,10 @@ def write_excel_log(log_path, deal_summary, elapsed_sec):
             cell.border = border
             if c == 4:
                 cell.fill = fill
-            cell.alignment = Alignment(wrap_text=(c >= 6))
+            # Highlight unmatched columns red if > 0
+            if c in (7, 9) and isinstance(val, int) and val > 0:
+                cell.fill = red_fill
+            cell.alignment = Alignment(wrap_text=(c >= 10))
 
     ws1.freeze_panes = "A3"
     ws1.auto_filter.ref = f"A2:{openpyxl.utils.get_column_letter(len(cols1))}2"
@@ -2101,18 +2155,28 @@ def write_excel_log(log_path, deal_summary, elapsed_sec):
     skipped     = sum(1 for d in deal_summary if d["status"].upper() == "SKIPPED")
     errors      = sum(1 for d in deal_summary if d["status"].upper() == "ERROR")
     total_files = sum(d["files_count"] for d in deal_summary)
+    total_unmatched = sum(
+        d.get(f"{ft}_metrics", {}).get("unmatched", 0)
+        for d in deal_summary for ft in ["periodic", "property"]
+    )
     banner = (f"CMBS Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  "
               f"Deals: {len(deal_summary)}  |  Created: {created}  |  "
               f"Skipped: {skipped}  |  Errors: {errors}  |  "
-              f"Files written: {total_files}  |  Elapsed: {elapsed_sec:.0f}s")
-    ws1.cell(1, 1, banner).font = Font(bold=True, size=11)
+              f"Files written: {total_files}  |  "
+              f"Filtered: {len(filtered_deals)}  |  "
+              f"Unmatched: {total_unmatched}  |  Elapsed: {elapsed_sec:.0f}s")
+    banner_cell = ws1.cell(1, 1, banner)
+    banner_cell.font = Font(bold=True, size=11)
+    if total_unmatched > 0 or errors > 0:
+        banner_cell.font = Font(bold=True, size=11, color="FF0000")
     ws1.merge_cells(f"A1:{openpyxl.utils.get_column_letter(len(cols1))}1")
     ws1.row_dimensions[1].height = 20
 
     # ── Tab 2: File Detail ───────────────────────────────────────────────────
     ws2 = wb.create_sheet("File Detail")
-    cols2   = ["Deal", "Det Date", "Servicer", "File Type", "Status", "File Path", "Notes"]
-    widths2 = [22, 12, 10, 16, 10, 90, 50]
+    cols2   = ["Deal", "Det Date", "Servicer", "File Type", "Status",
+               "Matched", "Unmatched", "Total Rows", "File Path", "Notes"]
+    widths2 = [22, 12, 10, 16, 10, 10, 12, 12, 90, 50]
 
     for c, h in enumerate(cols2, 1):
         cell = ws2.cell(1, c, h)
@@ -2123,7 +2187,10 @@ def write_excel_log(log_path, deal_summary, elapsed_sec):
 
     for i, fr in enumerate(file_rows, 2):
         row_data = [fr["deal"], fr["det_date"], fr["servicer"],
-                    fr["file_type"], fr["status"], fr["path"], fr["note"]]
+                    fr["file_type"], fr["status"],
+                    fr.get("matched", ""), fr.get("unmatched", ""),
+                    fr.get("total_rows", ""),
+                    fr["path"], fr["note"]]
         color = STATUS_COLORS.get(fr["status"].upper(), "FFFFFF")
         fill  = PatternFill("solid", fgColor=color)
         for c, val in enumerate(row_data, 1):
@@ -2131,12 +2198,32 @@ def write_excel_log(log_path, deal_summary, elapsed_sec):
             cell.border = border
             if c == 5:
                 cell.fill = fill
-            cell.alignment = Alignment(wrap_text=(c == 6))
+            if c == 7 and isinstance(val, int) and val > 0:
+                cell.fill = red_fill
+            cell.alignment = Alignment(wrap_text=(c == 9))
 
     ws2.freeze_panes = "A2"
     ws2.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(len(cols2))}1"
 
-    # ── Tab 3: Run Log ───────────────────────────────────────────────────────
+    # ── Tab 3: Filtered Deals ────────────────────────────────────────────────
+    ws_f = wb.create_sheet("Filtered Deals")
+    cols_f = ["Deal", "Filter Reason"]
+    for c, h in enumerate(cols_f, 1):
+        cell = ws_f.cell(1, c, h)
+        cell.font = hdr_font; cell.fill = hdr_fill; cell.border = border
+    ws_f.column_dimensions["A"].width = 30
+    ws_f.column_dimensions["B"].width = 40
+
+    for i, (tid, reason) in enumerate(filtered_deals, 2):
+        ws_f.cell(i, 1, tid).border = border
+        ws_f.cell(i, 2, reason).border = border
+
+    if not filtered_deals:
+        ws_f.cell(2, 1, "(none)").font = Font(italic=True)
+
+    ws_f.freeze_panes = "A2"
+
+    # ── Tab 4: Run Log ───────────────────────────────────────────────────────
     ws3 = wb.create_sheet("Run Log")
     for c, h in enumerate(["Time", "Level", "Message"], 1):
         cell = ws3.cell(1, c, h)
@@ -2212,6 +2299,12 @@ def run():
     global run_start
     run_start = datetime.now()
 
+    parser = argparse.ArgumentParser(description="CMBS Investor Reporting Tool")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Resolve all deal paths and report without writing files")
+    args, _ = parser.parse_known_args()
+    dry_run = args.dry_run
+
     folder = find_irp_folder()
     if not os.path.isdir(folder):
         print(f"ERROR: Folder not found: {folder}")
@@ -2239,6 +2332,7 @@ def run():
 
     irp_data  = read_irp(irp_path)
     validate_irp_columns(irp_data)
+    validate_overrides()
     pirp_data = read_pirpxllr(pirp_path) if pirp_path else []
 
     # Start a shared Excel COM instance for .xls -> .xlsx conversion, when available.
@@ -2257,13 +2351,16 @@ def run():
     log(f"\n  Unique deals before filter: {len(trans_map)}")
 
     # Step 1: remove zero-balance (paid off) deals
-    trans_map, _ = filter_zero_balance(trans_map, irp_data)
+    trans_map, zero_bal_removed = filter_zero_balance(trans_map, irp_data)
 
     # Step 2: remove deals with no Paid Through Date in PIRPXLLR
     if pirp_data:
-        active_map, _ = filter_by_pirpxllr(trans_map, pirp_data)
+        active_map, ptd_removed = filter_by_pirpxllr(trans_map, pirp_data)
     else:
         active_map = trans_map
+        ptd_removed = []
+
+    all_filtered = zero_bal_removed + ptd_removed
 
     log(f"  Active deals after filter:  {len(active_map)}\n")
 
@@ -2272,6 +2369,45 @@ def run():
     for i, tid in enumerate(sorted_deals, 1):
         svc = get_servicer(irp_data, tid)
         print(f"  {i:2d}. {tid}  [{svc}]")
+
+    # ── Dry-run mode: resolve paths and report without writing files ──
+    if dry_run:
+        print("\n" + "=" * 60)
+        print("  DRY RUN: Path resolution check (no files will be written)")
+        print("=" * 60)
+        issues = 0
+        for tid in sorted_deals:
+            servicer = get_servicer(irp_data, tid)
+            det_date = get_det_date(irp_data, tid)
+            lender = servicer_to_folder(servicer)
+            output = resolve_output_folder(tid, servicer)
+            crefc_parent = ""
+            if output:
+                try:
+                    out_folder = build_crefc_folder(output, det_date)
+                    crefc_parent = os.path.dirname(out_folder.rstrip(os.sep)) + os.sep
+                except Exception:
+                    pass
+            prev = find_prev_month_folder(crefc_parent, det_date) if crefc_parent else ""
+            ok = bool(output and prev)
+            if not ok:
+                issues += 1
+            print(f"\n  {'OK' if ok else 'ISSUE':>5}  {tid}")
+            print(f"         Servicer: {servicer} -> {lender}")
+            print(f"         Output:   {output or 'NOT FOUND'}")
+            print(f"         Previous: {prev or 'NOT FOUND'}")
+            if not output:
+                print(f"         FIX: Add to deal_overrides.json folder_overrides")
+            elif not prev:
+                print(f"         FIX: Ensure previous month CREFC folder exists in {crefc_parent}")
+
+        if all_filtered:
+            print(f"\n  Filtered out ({len(all_filtered)} deals):")
+            for tid, reason in all_filtered:
+                print(f"    {tid}: {reason}")
+
+        print(f"\n  Summary: {len(sorted_deals)} active deals, {issues} with path issues, {len(all_filtered)} filtered")
+        sys.exit(0)
 
     print(f"\nProcess all {len(sorted_deals)} deals? (Y/n): ", end="")
     if input().strip().lower() == "n":
@@ -2328,12 +2464,16 @@ def run():
             ("Financial",    lambda: create_financial(trans_id, det_date, prev_folder, out_folder, excel_app)),
         ]:
             if prev_folder:
-                path, err = fn()
+                path, err, metrics = fn()
             else:
-                path, err = "", "No previous month folder"
+                path, err, metrics = "", "No previous month folder", {}
             status = "CREATED" if path else "SKIPPED"
-            add_file_row(trans_id, det_date, servicer, file_type, status, path, err)
+            add_file_row(trans_id, det_date, servicer, file_type, status, path, err,
+                         matched=metrics.get("matched", 0),
+                         unmatched=metrics.get("unmatched", 0),
+                         total_rows=metrics.get("total_rows", 0))
             deal_record[f"{file_type.lower()}_path"] = path
+            deal_record[f"{file_type.lower()}_metrics"] = metrics
             if path:
                 deal_files += 1
 
@@ -2344,6 +2484,17 @@ def run():
             deal_record["note"]   = "No prior month files to copy forward"
         deal_summary.append(deal_record)
 
+    # Integrity check
+    if len(deal_summary) != len(sorted_deals):
+        log_err(f"  INTEGRITY: Expected {len(sorted_deals)} deals, only {len(deal_summary)} in summary")
+
+    total_unmatched = sum(
+        d.get(f"{ft}_metrics", {}).get("unmatched", 0)
+        for d in deal_summary for ft in ["periodic", "property"]
+    )
+    if total_unmatched > 0:
+        log(f"  WARNING: {total_unmatched} total unmatched loan rows across all deals", "WARN")
+
     # Write log
     elapsed  = (datetime.now() - run_start).total_seconds()
     ts       = run_start.strftime("%Y%m%d_%H%M%S")
@@ -2353,9 +2504,12 @@ def run():
     log(f"  RUN COMPLETE")
     log(f"  Deals processed: {len(deal_summary)}")
     log(f"  Files written:   {files_created}")
+    log(f"  Filtered:        {len(all_filtered)}")
+    if total_unmatched > 0:
+        log(f"  Unmatched loans: {total_unmatched}")
     log(f"  Elapsed:         {elapsed:.1f}s")
 
-    write_excel_log(log_path, deal_summary, elapsed)
+    write_excel_log(log_path, deal_summary, elapsed, all_filtered)
 
     # Clean up Excel COM instance if used
     if excel_app is not None:
