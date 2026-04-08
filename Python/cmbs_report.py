@@ -847,6 +847,8 @@ def create_periodic(trans_id, det_date, irp_data, pirp_data, prev_folder, out_fo
         matched = unmatched = unmatched_logged = 0
         for row_1 in range(cfg.PERIODIC_FIRST_DATA, last_row + 1):
             raw_loan_id = ws.cell(row_1, cfg.PERIODIC_LOAN_COL).value
+            if raw_loan_id is None or str(raw_loan_id).strip() == "":
+                continue  # skip blank/separator rows
             irp_row = None
             variants = loan_id_variants(raw_loan_id)
             for key in variants:
@@ -1028,6 +1030,8 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
             seen_loan_ids = set()
             for row_0 in range(block_start_0, last_row_0 + 1):
                 raw_loan_id = xls_cell(ws_r, row_0, LOAN_COL_0)
+                if raw_loan_id is None or str(raw_loan_id).strip() == "":
+                    continue  # skip blank/separator rows
                 irp_row = None
                 variants = list(loan_id_variants(raw_loan_id))
                 for key in variants:
@@ -1103,6 +1107,8 @@ def create_property(trans_id, det_date, irp_data, prev_folder, out_folder, excel
             seen_loan_ids = set()  # Track which loans already got col U written
             for row_1 in range(block_start_1, last_row_1 + 1):
                 raw_loan_id = ws.cell(row_1, cfg.PROP_LOAN_COL).value
+                if raw_loan_id is None or str(raw_loan_id).strip() == "":
+                    continue  # skip blank/separator rows
                 irp_row = None
                 variants = list(loan_id_variants(raw_loan_id))
                 for key in variants:
