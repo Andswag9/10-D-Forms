@@ -292,6 +292,7 @@ def main(email_after=False):
     success_count = 0
     skipped_count = 0
     error_count = 0
+    saved_filenames = set()
 
     if compact:
         print(
@@ -343,6 +344,12 @@ def main(email_after=False):
             for c in pool_name
         ).strip()
         pdf_filename = f"{filename_safe}-10D.pdf"
+
+        if pdf_filename in saved_filenames:
+            if compact:
+                print()
+            print(f"  WARNING: Duplicate pool '{pool_name}' (page {i+1}) — overwriting previous PDF")
+        saved_filenames.add(pdf_filename)
 
         dated_output_folder = os.path.join(output_folder, distribution_folder)
         os.makedirs(dated_output_folder, exist_ok=True)
