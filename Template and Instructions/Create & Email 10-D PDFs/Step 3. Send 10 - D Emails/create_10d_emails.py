@@ -276,6 +276,19 @@ def main(argv=None):
         print("ERROR: No PDF files found in the distribution date folders.")
         return 1, args.no_pause
 
+    # Deduplicate by pool name — same pool in multiple date folders = only email once
+    seen_pools = {}
+    unique_pdfs = []
+    for pdf_path in all_pdfs:
+        pool = pool_name_from_filename(os.path.basename(pdf_path))
+        if pool in seen_pools:
+            print(f"  WARNING: Duplicate pool '{pool}' — skipping {pdf_path}")
+            print(f"           (already found in {seen_pools[pool]})")
+        else:
+            seen_pools[pool] = pdf_path
+            unique_pdfs.append(pdf_path)
+    all_pdfs = unique_pdfs
+
     print(f"Found {len(all_pdfs)} pool PDF(s) to email:")
     for p in all_pdfs:
         print(f"  {os.path.basename(p)}")
@@ -296,6 +309,7 @@ def main(argv=None):
     print()
 
     success_count = 0
+    skipped_count = 0
     error_count = 0
 
     for pdf_path in all_pdfs:
@@ -305,12 +319,21 @@ def main(argv=None):
 
         subject = f"{month_code}_{year_code} 10D for {pool_name}"
         body = EMAIL_BODY.format(pool_name=pool_name)
+        dist_folder_path = os.path.dirname(pdf_path)
+
+        # Skip if .msg already exists (draft was previously created)
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', subject)
+        msg_path = os.path.join(dist_folder_path, f"{safe_name}.msg")
+        if os.path.isfile(msg_path):
+            print(f"  SKIP: {subject}")
+            print(f"    .msg already exists — draft was previously created")
+            print()
+            skipped_count += 1
+            continue
 
         print(f"  Creating draft: {subject}")
         print(f"    Attachment: {pdf_filename}")
         print(f"    Dist. date folder: {dist_folder}")
-
-        dist_folder_path = os.path.dirname(pdf_path)
 
         try:
             create_draft_email(
@@ -331,6 +354,8 @@ def main(argv=None):
     print("=" * 60)
     print("  DONE!")
     print(f"  Drafts created: {success_count}")
+    if skipped_count:
+        print(f"  Skipped (already sent): {skipped_count}")
     if error_count:
         print(f"  Errors: {error_count}")
     print("  Check your Outlook Drafts folder.")
