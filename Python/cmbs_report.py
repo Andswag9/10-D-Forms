@@ -781,6 +781,110 @@ def find_prev_month_folder(crefc_parent, det_date_str):
     # Production mode: scan the passed-in path directly
     return _scan(crefc_parent)
 
+# ── New-deal template seeding ─────────────────────────────────────────────────
+
+def _seed_from_templates(trans_id, irp_data):
+    """
+    For new deals with no prior-month files, copy sample CREFC templates
+    into a temp folder and seed them with the deal's loan IDs so that
+    create_periodic / create_property / create_supplemental can match
+    and update normally.  Returns the temp folder path (used as
+    prev_folder), or "" if samples are unavailable.
+    """
+    import tempfile
+
+    config_dir = os.path.dirname(os.path.abspath(cfg.__file__))
+    repo_root = os.path.dirname(config_dir)
+    pattern = os.path.join(repo_root, cfg.SAMPLE_TEMPLATE_GLOB)
+    all_samples = glob.glob(pattern)
+    if not all_samples:
+        log(f"     No sample templates found (glob: {cfg.SAMPLE_TEMPLATE_GLOB})")
+        return ""
+
+    samples = {}
+    for path in all_samples:
+        bn = os.path.basename(path).upper()
+        if "PERIODIC" in bn:
+            samples["Periodic"] = path
+        elif "PROPERTY" in bn:
+            samples["Property"] = path
+        elif "SUPPLEMENTAL" in bn:
+            samples["Supplemental"] = path
+
+    if not samples:
+        log("     Sample templates found but could not identify Periodic/Property/Supplemental")
+        return ""
+
+    deal_loans = []
+    for i, row in enumerate(irp_data):
+        if i == 0:
+            continue
+        if str(row[cfg.IRP_COL_TRANS_ID] or "").strip() == trans_id:
+            deal_loans.append(row[cfg.IRP_COL_LOAN_ID])
+
+    if not deal_loans:
+        log(f"     No IRP loans for {trans_id} — cannot seed templates")
+        return ""
+
+    clean = clean_filename(trans_id)
+    tmp_dir = tempfile.mkdtemp(prefix=f"crefc_seed_{clean}_")
+    log(f"     Seeding templates for new deal: {trans_id} ({len(deal_loans)} loan(s))")
+
+    # (sheet_index_or_name, trans_col_0, loan_col_0, first_data_row_0)
+    PERIODIC_SEED  = [(0, 0, 2, 6)]
+    PROPERTY_SEED  = [(0, 0, 1, 6)]
+    SUPP_SEED = [
+        ("Total Loan",        0, 2, 10),
+        ("Comp Finan Status", 0, 1, 13),
+        ("Res LOC Report",    0, 2,  7),
+    ]
+
+    for file_type, sample_path in samples.items():
+        dest = os.path.join(tmp_dir, f"CREFC_{file_type}_{clean}.xls")
+        try:
+            rb = xlrd.open_workbook(sample_path, formatting_info=True)
+            wb = xl_copy(rb)
+
+            if file_type == "Periodic":
+                seeds = PERIODIC_SEED
+            elif file_type == "Property":
+                seeds = PROPERTY_SEED
+            else:
+                seeds = None
+
+            if seeds is not None:
+                for sheet_idx, trans_col, loan_col, first_data in seeds:
+                    ws = wb.get_sheet(sheet_idx)
+                    rs = rb.sheet_by_index(sheet_idx)
+                    for r in range(first_data, rs.nrows):
+                        for c in range(rs.ncols):
+                            ws.write(r, c, "")
+                    for i, loan_id in enumerate(deal_loans):
+                        ws.write(first_data + i, trans_col, trans_id)
+                        ws.write(first_data + i, loan_col, loan_id)
+
+            elif file_type == "Supplemental":
+                for tab_name, trans_col, loan_col, first_data in SUPP_SEED:
+                    try:
+                        sheet_idx = rb.sheet_names().index(tab_name)
+                    except ValueError:
+                        continue
+                    ws = wb.get_sheet(sheet_idx)
+                    rs = rb.sheet_by_index(sheet_idx)
+                    for r in range(first_data, rs.nrows):
+                        for c in range(rs.ncols):
+                            ws.write(r, c, "")
+                    for i, loan_id in enumerate(deal_loans):
+                        ws.write(first_data + i, trans_col, trans_id)
+                        ws.write(first_data + i, loan_col, loan_id)
+
+            wb.save(dest)
+            log(f"       Seeded {file_type}: {os.path.basename(dest)}")
+        except Exception as e:
+            log_err(f"       Failed to seed {file_type}: {e}")
+
+    return tmp_dir
+
 # ── .xls file helpers (xlrd + xlutils.copy) ──────────────────────────────────
 
 def xls_cell(rb_sheet, row_0, col_0):
@@ -2583,10 +2687,16 @@ def run():
 
         crefc_parent = os.path.dirname(out_folder.rstrip(os.sep)) + os.sep
         prev_folder  = find_prev_month_folder(crefc_parent, det_date)
+        seeded_tmp   = ""
         if prev_folder:
             log(f"     Previous month: {prev_folder}")
         else:
-            log("     No previous month folder found - all 4 files will be skipped")
+            seeded_tmp = _seed_from_templates(trans_id, irp_data)
+            if seeded_tmp:
+                prev_folder = seeded_tmp
+                log(f"     New deal — seeded from sample templates")
+            else:
+                log("     No previous month folder and no templates — all files will be skipped")
 
         deal_files = 0
 
@@ -2616,6 +2726,12 @@ def run():
             deal_record["status"] = "SKIPPED"
             deal_record["note"]   = "No prior month files to copy forward"
         deal_summary.append(deal_record)
+
+        if seeded_tmp:
+            try:
+                shutil.rmtree(seeded_tmp, ignore_errors=True)
+            except Exception:
+                pass
 
     # Integrity check
     if len(deal_summary) != len(sorted_deals):
