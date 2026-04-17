@@ -21,6 +21,26 @@ SERVICER_FOLDER_MAP = {
     "WF": "Trimont",
 }
 
+# --- Active Conduit Pool Tracking List ---
+# Fallback source when the IRP's Master Servicer column is empty (e.g. new deals).
+# Expected location: same directory as this config file.
+# File is matched by glob so the monthly date in the filename doesn't matter.
+TRACKING_LIST_GLOB = "Active Conduit Pool Tracking List*.xlsx"
+TRACKING_LIST_SHEET = "Active Pools"
+TRACKING_LIST_HEADER_ROW = 3
+TRACKING_LIST_SERVICER_COL = 1   # A - Master Servicer
+TRACKING_LIST_POOL_COL     = 2   # B - Pool
+
+# Map Master Servicer names (as they appear in the tracking list) → servicer codes
+# used in SERVICER_FOLDER_MAP above.
+TRACKING_SERVICER_TO_CODE = {
+    "Key Bank":   "K",
+    "KeyBank":    "K",
+    "Midland":    "M",
+    "Trimont":    "TM",
+    "Wells Fargo": "WF",
+}
+
 # --- CREFC subfolder name variants to try when scanning deal folders ---
 CREFC_FOLDER_VARIANTS = ["CREFC", "CREFCs", "CREFC Reports", "CMSAs", "CFEFC"]
 

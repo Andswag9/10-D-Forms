@@ -353,12 +353,71 @@ def get_det_date(irp_data, trans_id):
             return str(d).replace("-","").replace("/","")[:8]
     return ""
 
+_tracking_list_cache = None
+
+def _load_tracking_list():
+    """
+    Load the Active Conduit Pool Tracking List into a {pool: servicer_code} dict.
+    Tracking list lives alongside cmbs_config.py and contains columns:
+    Master Servicer, Pool, Cashiered/Non-cashiered, GID, Loan Number, Borrower Name.
+    Used as a fallback when IRP col EC (Master Servicer) is empty.
+    Returns {} silently if the file is missing or unreadable.
+    """
+    global _tracking_list_cache
+    if _tracking_list_cache is not None:
+        return _tracking_list_cache
+
+    _tracking_list_cache = {}
+    config_dir = os.path.dirname(os.path.abspath(cfg.__file__))
+    pattern = os.path.join(config_dir, cfg.TRACKING_LIST_GLOB)
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        log(f"  Tracking list not found (glob: {cfg.TRACKING_LIST_GLOB}) — servicer fallback disabled")
+        return _tracking_list_cache
+
+    path = matches[-1]
+    log(f"  Loading tracking list: {os.path.basename(path)}")
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        ws = wb[cfg.TRACKING_LIST_SHEET]
+        unknown_names = set()
+        for row in ws.iter_rows(min_row=cfg.TRACKING_LIST_HEADER_ROW + 1, values_only=True):
+            name = row[cfg.TRACKING_LIST_SERVICER_COL - 1]
+            pool = row[cfg.TRACKING_LIST_POOL_COL - 1]
+            if not pool:
+                continue
+            pool = str(pool).strip()
+            name = str(name).strip() if name else ""
+            code = cfg.TRACKING_SERVICER_TO_CODE.get(name, "")
+            if not code and name:
+                unknown_names.add(name)
+                continue
+            _tracking_list_cache.setdefault(pool, code)
+        wb.close()
+        log(f"  Tracking list: {len(_tracking_list_cache)} pools indexed")
+        for n in sorted(unknown_names):
+            log(f"  WARNING: Tracking list servicer name '{n}' not in TRACKING_SERVICER_TO_CODE")
+    except Exception as e:
+        log_err(f"  Could not read tracking list '{path}': {e}")
+    return _tracking_list_cache
+
 def get_servicer(irp_data, trans_id):
-    """Return Master Servicer code for a deal."""
+    """
+    Return Master Servicer code for a deal.
+    Falls back to the Active Conduit Pool Tracking List when the IRP's
+    Master Servicer column is empty (common for newly added deals).
+    """
     for row in irp_data[1:]:
         if str(row[cfg.IRP_COL_TRANS_ID] or "").strip() == trans_id:
-            return str(row[cfg.IRP_COL_SERVICER] or "").strip()
-    return ""
+            svc = str(row[cfg.IRP_COL_SERVICER] or "").strip()
+            if svc:
+                return svc
+            break
+    tracking = _load_tracking_list()
+    code = tracking.get(trans_id, "")
+    if code:
+        log(f"     Servicer resolved via tracking list: {trans_id} -> {code}")
+    return code
 
 def normalize_loan_id(value):
     """
