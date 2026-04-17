@@ -355,6 +355,62 @@ def get_det_date(irp_data, trans_id):
 
 _tracking_list_cache = None
 
+def sync_tracking_list():
+    """
+    Refresh the local Active Conduit Pool Tracking List from the master on
+    S:\\Reporting. Writes a new dated xlsx alongside cmbs_config.py using the
+    column map TRACKING_LIST_COL_MAP. Gracefully returns None if the master
+    isn't reachable (falls back to most recent local copy).
+    """
+    global _tracking_list_cache
+    source = getattr(cfg, "TRACKING_LIST_SOURCE", "")
+    if not source or not os.path.isfile(source):
+        log(f"  Tracking list master not accessible: {source or '(not configured)'}")
+        log(f"    Will use most recent local copy instead")
+        return None
+
+    config_dir = os.path.dirname(os.path.abspath(cfg.__file__))
+    today = datetime.now()
+    date_str = f"{today.month}.{today.day}.{today.year}"
+    dest_path = os.path.join(
+        config_dir, f"Active Conduit Pool Tracking List {date_str}.xlsx"
+    )
+
+    try:
+        src_wb = openpyxl.load_workbook(source, data_only=True, read_only=True)
+        src_ws = src_wb[cfg.TRACKING_LIST_SHEET]
+
+        dest_wb = openpyxl.Workbook()
+        dest_ws = dest_wb.active
+        dest_ws.title = cfg.TRACKING_LIST_SHEET
+
+        header_row = cfg.TRACKING_LIST_HEADER_ROW
+        col_map = cfg.TRACKING_LIST_COL_MAP
+
+        for src_col, dest_col in col_map:
+            dest_ws.cell(header_row, dest_col).value = src_ws.cell(header_row, src_col).value
+
+        data_rows = 0
+        dest_row = header_row + 1
+        for src_row in src_ws.iter_rows(min_row=header_row + 1, values_only=True):
+            pool = src_row[cfg.TRACKING_LIST_POOL_COL - 1] if len(src_row) >= cfg.TRACKING_LIST_POOL_COL else None
+            if not pool:
+                continue
+            for src_col, dest_col in col_map:
+                val = src_row[src_col - 1] if len(src_row) >= src_col else None
+                dest_ws.cell(dest_row, dest_col).value = val
+            dest_row += 1
+            data_rows += 1
+
+        src_wb.close()
+        dest_wb.save(dest_path)
+        log(f"  Tracking list synced: {data_rows} pools from master -> {os.path.basename(dest_path)}")
+        _tracking_list_cache = None  # force reload on next _load_tracking_list()
+        return dest_path
+    except Exception as e:
+        log_err(f"  Tracking list sync failed: {e}")
+        return None
+
 def _load_tracking_list():
     """
     Load the Active Conduit Pool Tracking List into a {pool: servicer_code} dict.
@@ -370,11 +426,13 @@ def _load_tracking_list():
     _tracking_list_cache = {}
     config_dir = os.path.dirname(os.path.abspath(cfg.__file__))
     pattern = os.path.join(config_dir, cfg.TRACKING_LIST_GLOB)
-    matches = sorted(glob.glob(pattern))
+    matches = glob.glob(pattern)
     if not matches:
         log(f"  Tracking list not found (glob: {cfg.TRACKING_LIST_GLOB}) — servicer fallback disabled")
         return _tracking_list_cache
 
+    # Pick most recently modified file (filename dates like "4.17.2026" don't sort correctly)
+    matches.sort(key=os.path.getmtime)
     path = matches[-1]
     log(f"  Loading tracking list: {os.path.basename(path)}")
     try:
@@ -588,11 +646,20 @@ def resolve_output_folder(trans_id, servicer, deal_tracker_path=None):
         log(f"       found: {folder}")
         return folder
 
-    # Constructed fallback
-    constructed = os.path.join(base, trans_id, "")
+    # No existing folder: auto-create new-deal folder as "<series> <ticker>"
+    # e.g. "MSC 2021-L5" -> "2021-L5 MSC"
+    ticker = trans_id.split()[0] if " " in trans_id else ""
+    new_name = f"{series} {ticker}".strip() if ticker else trans_id
+    constructed = os.path.join(base, new_name, "")
     log(f"     Folder NOT found by scan (series '{series}' not in any subfolder name)")
-    log(f"       Fix: add to DEAL_FOLDER_OVERRIDES in cmbs_config.py")
-    log(f"       Using constructed (may not exist): {constructed}")
+    if cfg.TEST_MODE:
+        log(f"       TEST MODE — would create new deal folder: {constructed}")
+        return constructed
+    try:
+        os.makedirs(constructed, exist_ok=True)
+        log(f"       Created new deal folder: {constructed}")
+    except Exception as e:
+        log_err(f"       Could not create new deal folder '{constructed}': {e}")
     return constructed
 
 def _lookup_deal_tracker(xlsm_path, trans_id):
@@ -2398,6 +2465,7 @@ def run():
     irp_data  = read_irp(irp_path)
     validate_irp_columns(irp_data)
     validate_overrides()
+    sync_tracking_list()
     pirp_data = read_pirpxllr(pirp_path) if pirp_path else []
 
     # Start a shared Excel COM instance for .xls -> .xlsx conversion, when available.
