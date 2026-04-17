@@ -392,9 +392,14 @@ def sync_tracking_list():
 
         data_rows = 0
         dest_row = header_row + 1
+        # Column 4 (D) = GID on the Active Pools tab.
+        # Only rows with a GID are actual pool entries; header repeats and
+        # summary rows (e.g. "# of Pools:" in cell B67) have no GID.
+        GID_COL = 4
         for src_row in src_ws.iter_rows(min_row=header_row + 1, values_only=True):
-            pool = src_row[cfg.TRACKING_LIST_POOL_COL - 1] if len(src_row) >= cfg.TRACKING_LIST_POOL_COL else None
-            if not pool:
+            gid = src_row[GID_COL - 1] if len(src_row) >= GID_COL else None
+            gid_str = str(gid).strip() if gid is not None else ""
+            if not gid_str:
                 continue
             for src_col, dest_col in col_map:
                 val = src_row[src_col - 1] if len(src_row) >= src_col else None
@@ -462,8 +467,10 @@ def _load_tracking_list():
 def get_servicer(irp_data, trans_id):
     """
     Return Master Servicer code for a deal.
-    Falls back to the Active Conduit Pool Tracking List when the IRP's
-    Master Servicer column is empty (common for newly added deals).
+    Resolution order:
+    1. IRP col EC (Master Servicer)
+    2. DEAL_SERVICER_OVERRIDES in deal_overrides.json
+    3. Active Conduit Pool Tracking List (pool -> servicer)
     """
     for row in irp_data[1:]:
         if str(row[cfg.IRP_COL_TRANS_ID] or "").strip() == trans_id:
@@ -471,6 +478,10 @@ def get_servicer(irp_data, trans_id):
             if svc:
                 return svc
             break
+    override = getattr(cfg, "DEAL_SERVICER_OVERRIDES", {}).get(trans_id, "")
+    if override:
+        log(f"     Servicer resolved via deal_overrides.json: {trans_id} -> {override}")
+        return override
     tracking = _load_tracking_list()
     code = tracking.get(trans_id, "")
     if code:

@@ -163,3 +163,4 @@ except (FileNotFoundError, _json.JSONDecodeError):
 
 DEAL_FOLDER_OVERRIDES = {k: v for k, v in _overrides.get("folder_overrides", {}).items() if k != "_comment"}
 DEAL_FILENAME_OVERRIDES = {k: v for k, v in _overrides.get("filename_overrides", {}).items() if k != "_comment"}
+DEAL_SERVICER_OVERRIDES = {k: v for k, v in _overrides.get("servicer_overrides", {}).items() if k != "_comment"}
