@@ -19,5 +19,11 @@
 
         "BANK5 20255YR15": "BANK5 2025-5YR15",
         "BANK5 20255YR18": "BANK5 2025-5YR18"
+    },
+
+    "servicer_overrides": {
+        "_comment": "Key = Transaction ID. Value = servicer code (K, M, TM, WF) matching SERVICER_FOLDER_MAP. Used when IRP col EC is empty AND the tracking list has no entry for the deal.",
+
+        "CSAIL 2019-C1": "M"
     }
 }
