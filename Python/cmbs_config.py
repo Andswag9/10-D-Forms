@@ -59,6 +59,10 @@ TRACKING_SERVICER_TO_CODE = {
 # --- CREFC subfolder name variants to try when scanning deal folders ---
 CREFC_FOLDER_VARIANTS = ["CREFC", "CREFCs", "CREFC Reports", "CMSAs", "CFEFC"]
 
+# --- Sample CREFC templates for new deals (no prior month files) ---
+# Located one directory above the Python scripts directory.
+SAMPLE_TEMPLATE_GLOB = "!_SAMPLE_CREFC*.xls"
+
 # --- IRP column indices (1-based, matching PIRPXLPU layout) ---
 IRP_COL_TRANS_ID   = 1    # A  - Transaction ID
 IRP_COL_LOAN_ID    = 3    # C  - Loan ID  (primary key)
