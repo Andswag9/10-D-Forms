@@ -31,6 +31,21 @@ TRACKING_LIST_HEADER_ROW = 3
 TRACKING_LIST_SERVICER_COL = 1   # A - Master Servicer
 TRACKING_LIST_POOL_COL     = 2   # B - Pool
 
+# Master copy of the tracking list on S: drive.
+# Local tracking list is refreshed from this at the start of each run.
+TRACKING_LIST_SOURCE = r"S:\Reporting\Pooling List\Active Conduit Pool & Lender Abstract Tracking List.xlsx"
+
+# Column mapping (source_col, dest_col), 1-based. Source is the master on S:,
+# dest is the local copy. Source col E is skipped.
+TRACKING_LIST_COL_MAP = [
+    (1, 1),   # Master Servicer
+    (2, 2),   # Pool
+    (3, 3),   # Cashiered or Non-cashiered
+    (4, 4),   # GID
+    (6, 5),   # Loan Number (source F -> dest E)
+    (7, 6),   # Borrower Name (source G -> dest F)
+]
+
 # Map Master Servicer names (as they appear in the tracking list) → servicer codes
 # used in SERVICER_FOLDER_MAP above.
 TRACKING_SERVICER_TO_CODE = {
