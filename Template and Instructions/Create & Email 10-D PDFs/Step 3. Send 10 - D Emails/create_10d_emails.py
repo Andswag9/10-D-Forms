@@ -317,7 +317,18 @@ def main(argv=None):
         pool_name = pool_name_from_filename(pdf_filename)
         dist_folder = os.path.basename(os.path.dirname(pdf_path))
 
-        subject = f"{month_code}_{year_code} 10D for {pool_name}"
+        # Use the distribution date from the subfolder name (M.DD.YYYY)
+        dist_match = re.match(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', dist_folder)
+        if dist_match:
+            d_month = int(dist_match.group(1))
+            d_year = int(dist_match.group(3))
+            subj_month = f"{d_month:02d}"
+            subj_year = f"{d_year % 100:02d}"
+        else:
+            subj_month = month_code
+            subj_year = year_code
+
+        subject = f"{subj_month}_{subj_year} 10D for {pool_name}"
         body = EMAIL_BODY.format(pool_name=pool_name)
         dist_folder_path = os.path.dirname(pdf_path)
 
